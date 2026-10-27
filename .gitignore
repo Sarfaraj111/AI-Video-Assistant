@@ -1,0 +1,35 @@
+# Environment variables
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local databases / vector stores
+chroma_db/
+
+# Generated files
+*.mp3
+*.wav
+*.m4a
+*.mp4
+*.webm
+
+# Whisper/cache
+.cache/
+vector_db/
