@@ -29,3 +29,6 @@ numpy>=1.26.0
 requests>=2.32.0
 
 audioop-lts; python_version >= "3.13"
+
+groq>=0.9.0
+faster-whisper>=1.0.0

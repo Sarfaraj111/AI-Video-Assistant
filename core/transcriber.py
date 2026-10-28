@@ -1,80 +1,76 @@
-import whisper
 import os
+import time
+
+_groq_client = None
+_local_model = None
+
+GROQ_MODEL = "whisper-large-v3-turbo"
+MAX_GROQ_BYTES = 24 * 1024 * 1024  # Groq free tier limit is 25 MB
 
 
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
-
-_model = None
-
-
-def load_model():
-    global _model
-
-    if _model is None:
-        print(f"Loading Whisper model: {WHISPER_MODEL} ...")
-        _model = whisper.load_model(WHISPER_MODEL)
-        print("Whisper model loaded.")
-
-    return _model
+def _lang_code(language: str) -> str:
+    return "en" if language.lower() == "english" else "hi"
 
 
-def transcribe_chunk_whisper(
-    chunk_path: str,
-    language: str = "english") -> str:
-
-    model = load_model()
-
-    if language.lower() == "hinglish":
-        # Whisper translates Hindi speech into English
-        result = model.transcribe(
-            chunk_path,
-            task="translate"
-        )
-    else:
-        # Normal English transcription
-        result = model.transcribe(
-            chunk_path,
-            task="transcribe"
-        )
-
-    return result["text"]
+# ── Groq (free tier, hosted) ──────────────────────────────────────────────────
+def _get_groq():
+    global _groq_client
+    if _groq_client is None:
+        from groq import Groq
+        _groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    return _groq_client
 
 
-def transcribe_chunk(
-    chunk_path: str,
-    language: str = "english"
-) -> str:
+def _transcribe_groq(path: str, lang: str) -> str:
+    from groq import RateLimitError
 
-    return transcribe_chunk_whisper(
-        chunk_path,
-        language=language
-    )
+    if os.path.getsize(path) > MAX_GROQ_BYTES:
+        raise ValueError("File too large for Groq free tier")
+
+    client = _get_groq()
+    for attempt in range(3):
+        try:
+            with open(path, "rb") as f:
+                r = client.audio.transcriptions.create(
+                    file=(os.path.basename(path), f.read()),
+                    model=GROQ_MODEL,
+                    language=lang,
+                    response_format="text",
+                )
+            return r if isinstance(r, str) else r.text
+        except RateLimitError:
+            time.sleep(10 * (attempt + 1))
+    raise RuntimeError("Groq rate limit")
 
 
-def transcribe_all(
-    chunks: list,
-    language: str = "english"
-) -> str:
+# ── faster-whisper (free, local, no torch) ────────────────────────────────────
+def _get_local():
+    global _local_model
+    if _local_model is None:
+        from faster_whisper import WhisperModel
+        size = os.getenv("WHISPER_MODEL", "base")
+        if size not in ("tiny", "base", "small"):  # keep within free-tier RAM
+            size = "base"
+        _local_model = WhisperModel(size, device="cpu", compute_type="int8")
+    return _local_model
 
-    full_transcript = ""
 
-    engine = "Whisper"
-    print(f"Using {engine} for transcription.")
+def _transcribe_local(path: str, lang: str) -> str:
+    segments, _ = _get_local().transcribe(path, language=lang, vad_filter=True)
+    return " ".join(s.text.strip() for s in segments)
 
-    for i, chunk in enumerate(chunks):
 
-        print(
-            f"Transcribing chunk "
-            f"{i + 1}/{len(chunks)}..."
-        )
+# ── Public API ────────────────────────────────────────────────────────────────
+def _transcribe_chunk(path: str, lang: str) -> str:
+    if os.getenv("GROQ_API_KEY"):
+        try:
+            return _transcribe_groq(path, lang)
+        except Exception as e:
+            print(f"Groq failed ({e}); falling back to local faster-whisper")
+    return _transcribe_local(path, lang)
 
-        text = transcribe_chunk(
-            chunk,
-            language=language
-        )
 
-        full_transcript += text + " "
-
-    print("Transcription complete.")
-
-    return full_transcript.strip()
+def transcribe_all(chunks, language: str = "english") -> str:
+    lang = _lang_code(language)
+    parts = [_transcribe_chunk(p, lang) for p in chunks]
+    return "\n".join(p.strip() for p in parts if p)
